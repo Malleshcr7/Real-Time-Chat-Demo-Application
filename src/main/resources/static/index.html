@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Chat</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.5.0/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+        .chat-container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .chat-messages {
+            height: 400px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 5px;
+            position: relative;
+        }
+        .message.sent {
+            background-color: #e3f2fd;
+            text-align: right;
+        }
+        .message.received {
+            background-color: #f5f5f5;
+        }
+        .message-status {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 2px;
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 5px;
+        }
+        button {
+            padding: 5px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .media-preview {
+            max-width: 200px;
+            max-height: 200px;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div id="chat-messages" class="chat-messages"></div>
+        <div class="input-container">
+            <input type="text" id="message" placeholder="Type a message...">
+            <input type="file" id="media" accept="image/*,video/*">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        let stompClient = null;
+        let username = null;
+        let messageId = 0;
+
+        function connect() {
+            username = prompt('Enter your name:');
+            if (!username) return;
+
+            const socket = new SockJS('/ws');
+            stompClient = Stomp.over(socket);
+            stompClient.connect({}, onConnected, onError);
+        }
+
+        function onConnected() {
+            // Subscribe to public messages
+            stompClient.subscribe('/topic/public', onMessageReceived);
+            
+            // Subscribe to private status updates
+            stompClient.subscribe('/user/queue/status', onStatusUpdate);
+            
+            stompClient.send("/app/chat.addUser",
+                {},
+                JSON.stringify({sender: username, type: 'JOIN'})
+            );
+        }
+
+        function onError(error) {
+            console.error('Error:', error);
+        }
+
+        function sendMessage() {
+            const messageInput = document.getElementById('message');
+            const mediaInput = document.getElementById('media');
+            const messageContent = messageInput.value.trim();
+            
+            if ((messageContent || mediaInput.files.length > 0) && stompClient) {
+                const chatMessage = {
+                    sender: username,
+                    content: messageContent,
+                    type: 'CHAT',
+                    id: messageId++
+                };
+
+                // Handle media upload if present
+                if (mediaInput.files.length > 0) {
+                    const file = mediaInput.files[0];
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        chatMessage.mediaUrl = e.target.result;
+                        sendMessageToServer(chatMessage);
+                    };
+                    reader.readAsDataURL(file);
+                } else {
+                    sendMessageToServer(chatMessage);
+                }
+
+                messageInput.value = '';
+                mediaInput.value = '';
+            }
+        }
+
+        function sendMessageToServer(chatMessage) {
+            stompClient.send("/app/chat.sendMessage", {}, JSON.stringify(chatMessage));
+        }
+
+        function onMessageReceived(payload) {
+            const message = JSON.parse(payload.body);
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message');
+            
+            if (message.type === 'JOIN') {
+                messageElement.classList.add('received');
+                messageElement.textContent = `${message.sender} joined the chat!`;
+            } else if (message.type === 'LEAVE') {
+                messageElement.classList.add('received');
+                messageElement.textContent = `${message.sender} left the chat!`;
+            } else {
+                messageElement.classList.add(message.sender === username ? 'sent' : 'received');
+                
+                // Add message content
+                const contentElement = document.createElement('div');
+                contentElement.textContent = `${message.sender}: ${message.content}`;
+                messageElement.appendChild(contentElement);
+
+                // Add media if present
+                if (message.mediaUrl) {
+                    const mediaElement = document.createElement('img');
+                    mediaElement.src = message.mediaUrl;
+                    mediaElement.classList.add('media-preview');
+                    messageElement.appendChild(mediaElement);
+                }
+
+                // Add status indicator
+                const statusElement = document.createElement('div');
+                statusElement.classList.add('message-status');
+                statusElement.textContent = 'Sent';
+                messageElement.appendChild(statusElement);
+
+                // Mark as read if received
+                if (message.sender !== username) {
+                    stompClient.send("/app/chat.markAsRead", {}, JSON.stringify(message.id));
+                }
+            }
+
+            document.getElementById('chat-messages').appendChild(messageElement);
+            messageElement.scrollIntoView();
+        }
+
+        function onStatusUpdate(payload) {
+            const status = JSON.parse(payload.body);
+            console.log('Status update:', status);
+            // Update message status in UI
+        }
+
+        // Connect when the page loads
+        window.onload = connect;
+    </script>
+</body>
+</html> 
